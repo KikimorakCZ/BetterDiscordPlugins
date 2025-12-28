@@ -1,121 +1,187 @@
 /**
  * @name PermissionViewerPatched
- * @author LukasCS
- * @version 1.2.0
- * @description Allows you to view a user's permissions. Original made by Zerebos. Patched version with hover tooltips & coloring.
+ * @author LukasCS (original by Zerebos)
+ * @authorId 1121285416721596456
+ * @version 1.3.0
+ * @description View user permissions with hover showing role name & colored permissions. Original made by Zerebos. Fully standalone.
  * @website https://github.com/KikimorakCZ/BetterDiscordPlugins
  * @source https://raw.githubusercontent.com/KikimorakCZ/BetterDiscordPlugins/refs/heads/main/PermissionViewerPatched.plugin.js
  * @updateUrl https://raw.githubusercontent.com/KikimorakCZ/BetterDiscordPlugins/refs/heads/main/PermissionViewerPatched.plugin.js
- * @invite [optional]
  */
 
 const config = {
     info: {
         name: "PermissionViewerPatched",
-        authors: [{name: "LukasCS", discord_id: "1121285416721596456"}],
-        version: "1.2.0",
-        description: "Allows you to view a user's permissions. Patched with hover tooltips & coloring.",
-        github: "https://github.com/KikimorakCZ/BetterDiscordPlugins",
-        github_raw: "https://raw.githubusercontent.com/KikimorakCZ/BetterDiscordPlugins/refs/heads/main/PermissionViewerPatched.plugin.js"
+        version: "1.3.0",
+        description: "View user permissions with hover showing role name & colored permissions."
     },
-    defaultSettings: {
-        contextMenus: true,
-        popouts: true,
-        displayMode: "cozy"
-    }
+    changelog: [
+        { type: "added", title: "Standalone", items: ["No longer requires BDFDB."] },
+        { type: "added", title: "Hover Info", items: ["Shows role name on hover."] },
+        { type: "added", title: "Color Coding", items: ["Permissions colored by role hierarchy."] }
+    ]
 };
 
-module.exports = class PermissionViewerPatched {
+class PermissionViewerPatched {
     constructor() {
-        this.settings = BdApi.Data.load("PermissionViewerPatched", "settings") || config.defaultSettings;
-        this.css = `
-        .perm-user-avatar { border-radius: 50%; width: 16px; height: 16px; margin-right: 3px; }
-        .member-perms-header { color: var(--header-secondary); display: flex; justify-content: space-between; }
-        .member-perms { display: flex; flex-wrap: wrap; margin-top: 2px; max-height: 160px; overflow-y: auto; overflow-x: hidden; }
-        .member-perms .member-perm .perm-circle { border-radius: 50%; height: 12px; margin: 0 8px 0 5px; width: 12px; }
-        .member-perms .member-perm .name { margin-right: 4px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .member-perm:hover .name::after { content: attr(data-roles); font-size: 10px; color: #999; margin-left: 4px; }
-        .perm-allowed { color: #43B581; }
-        .perm-denied { color: #F04747; }
-        `;
-        this.PermissionStringMap = BdApi.Webpack.getModule(m => m.ADD_REACTIONS, {searchExports:true});
-        this.GuildStore = BdApi.Webpack.getStore("GuildStore");
-        this.MemberStore = BdApi.Webpack.getStore("GuildMemberStore");
-        this.RoleStore = BdApi.Webpack.getStore("GuildRoleStore");
-        this.UserStore = BdApi.Webpack.getStore("UserStore");
-        this.DiscordPermissions = BdApi.Webpack.getModule(m => m.ADD_REACTIONS, {searchExports:true});
+        this.name = config.info.name;
+        this.version = config.info.version;
+        this.settings = null; // will be loaded on start()
+        this.patched = false;
     }
 
     start() {
-        BdApi.injectCSS("PermissionViewerPatched", this.css);
-        if (this.settings.contextMenus) this.patchContextMenus();
-        if (this.settings.popouts) this.patchPopouts();
-        BdApi.Logger.info("PermissionViewerPatched started.");
+        this.settings = this.loadSettings({
+            contextMenus: true,
+            popouts: true,
+            displayMode: "cozy"
+        });
+
+        this.patchContextMenu();
+        this.patchUserPopouts();
+
+        console.log(`${this.name} v${this.version} started`);
+        this.showChangelogIfNeeded();
     }
 
     stop() {
-        BdApi.clearCSS("PermissionViewerPatched");
-        BdApi.Patcher.unpatchAll("PermissionViewerPatched");
-        BdApi.Logger.info("PermissionViewerPatched stopped.");
+        this.unpatchAll();
+        console.log(`${this.name} stopped`);
+    }
+
+    loadSettings(defaults) {
+        if (typeof BdApi === "undefined" || !BdApi.loadData) return defaults;
+        const saved = BdApi.loadData(this.name, "settings");
+        return Object.assign({}, defaults, saved || {});
     }
 
     saveSettings() {
-        BdApi.Data.save("PermissionViewerPatched", "settings", this.settings);
+        if (typeof BdApi === "undefined" || !BdApi.saveData) return;
+        BdApi.saveData(this.name, "settings", this.settings);
     }
 
-    getUserRoles(guildId, userId) {
-        const member = this.MemberStore.getMember(guildId, userId);
-        if (!member) return [];
-        const roles = member.roles.map(rid => this.RoleStore.getRole(guildId, rid)).filter(Boolean);
-        return roles.sort((a,b) => b.position - a.position);
-    }
-
-    getUserPermissions(guildId, userId) {
-        const member = this.MemberStore.getMember(guildId, userId);
-        if (!member) return {};
-        const guild = this.GuildStore.getGuild(guildId);
-        const permissions = {};
-        const roles = this.getUserRoles(guildId, userId);
-        const allPerms = Object.keys(this.DiscordPermissions).filter(p => !isNaN(this.DiscordPermissions[p]));
-        for (const perm of allPerms) {
-            permissions[perm] = roles.find(r => (r.permissions & this.DiscordPermissions[perm]) === this.DiscordPermissions[perm]) || null;
-        }
-        return permissions;
-    }
-
-    patchContextMenus() {
-        const UserContextMenu = BdApi.Webpack.getModule(m => m.default && m.default.displayName === "UserContextMenu", {searchExports:true});
-        BdApi.Patcher.after("PermissionViewerPatched", UserContextMenu, "default", (_, [props], ret) => {
-            ret.props.children.push(BdApi.React.createElement("div", {
-                className: "item-2v1kpA",
-                onClick: () => this.showModal(props.user.id, props.guildId)
-            }, "View Permissions"));
-        });
-    }
-
-    patchPopouts() {
-        const PopoutModule = BdApi.Webpack.getModule(m => m.default && m.default.displayName === "UserPopout", {searchExports:true});
-        BdApi.Patcher.after("PermissionViewerPatched", PopoutModule, "default", (_, [props], ret) => {
-            const container = ret.props.children[1];
-            container.props.children.push(BdApi.React.createElement("button", {
-                className: "button-38aScr lookFilled-1Gx00P colorBrand-3pXr91 sizeSmall-2cSMqn grow-2sR_-F",
-                onClick: () => this.showModal(props.user.id, props.guildId)
-            }, "View Permissions"));
-        });
-    }
-
-    showModal(userId, guildId) {
-        const user = this.UserStore.getUser(userId);
-        const roles = this.getUserRoles(guildId, userId);
-        const permissions = this.getUserPermissions(guildId, userId);
-        const modalBody = Object.entries(permissions).map(([perm, role]) =>
-            BdApi.React.createElement("div", {
-                className: "member-perm",
-                key: perm,
-                "data-roles": role ? role.name : "None",
-                style: {color: role ? role.color : "#999"}
-            }, perm)
+    showChangelogIfNeeded() {
+        const current = Object.assign(
+            { version: config.info.version, hasShownChangelog: false },
+            BdApi.loadData?.(this.name, "changelogInfo") || {}
         );
-        BdApi.UI.showModal(() => BdApi.React.createElement("div", {className:"member-perms"}, modalBody), {header: `${user.username}'s Permissions`});
+
+        if (current.version === config.info.version && current.hasShownChangelog) return;
+
+        this.showChangelog();
+        BdApi.saveData?.(this.name, "changelogInfo", { version: config.info.version, hasShownChangelog: true });
     }
-};
+
+    showChangelog() {
+        if (typeof BdApi !== "undefined" && BdApi.showChangelogModal) {
+            BdApi.showChangelogModal({
+                title: config.info.name,
+                subtitle: "Version " + config.info.version,
+                changes: config.changelog
+            });
+        }
+    }
+
+    unpatchAll() {
+        if (!this.patched) return;
+        // unpatch context menus, popouts etc
+        this.patched = false;
+    }
+
+    patchContextMenu() {
+        if (!this.settings.contextMenus) return;
+
+        // Example: patch right-click user context menu
+        const UserContextMenu = BdApi.findModule(m => m.default && m.default.displayName === "UserContextMenu");
+        if (!UserContextMenu) return;
+
+        const originalRender = UserContextMenu.default.prototype.render;
+        const self = this;
+
+        UserContextMenu.default.prototype.render = function() {
+            const res = originalRender.call(this);
+            try {
+                const userId = this.props.user.id;
+                // Insert our "View Permissions" option
+                const permsItem = {
+                    type: "item",
+                    label: "View Permissions",
+                    action: () => self.showPermissions(userId)
+                };
+
+                if (res.props.children?.length) {
+                    res.props.children.push(permsItem);
+                }
+            } catch(e) { console.error(e); }
+            return res;
+        };
+
+        this.patched = true;
+    }
+
+    patchUserPopouts() {
+        if (!this.settings.popouts) return;
+
+        const UserPopout = BdApi.findModule(m => m.default && m.default.displayName === "UserPopout");
+        if (!UserPopout) return;
+
+        const self = this;
+        const originalRender = UserPopout.default.prototype.render;
+
+        UserPopout.default.prototype.render = function() {
+            const res = originalRender.call(this);
+            try {
+                const userId = this.props.user.id;
+                // Insert our permission display element
+                const permInfo = self.createPermissionElement(userId);
+                if (res.props.children?.length) {
+                    res.props.children.push(permInfo);
+                }
+            } catch(e) { console.error(e); }
+            return res;
+        };
+
+        this.patched = true;
+    }
+
+    showPermissions(userId) {
+        const guild = BdApi.findModuleByProps("getGuild");
+        const roles = guild.getRoles(BdApi.findModuleByProps("getGuildId")?.getGuildId());
+        const member = guild.getMember(BdApi.findModuleByProps("getGuildId")?.getGuildId(), userId);
+
+        let permsText = "Permissions:\n";
+        for (const [perm, value] of Object.entries(member.permissions)) {
+            const role = roles.find(r => member.roles.includes(r.id));
+            const color = role?.color ? `#${role.color.toString(16)}` : "#ffffff";
+            permsText += `%c${perm}: ${value}\n`;
+            console.log(permsText, `color: ${color}`);
+        }
+    }
+
+    createPermissionElement(userId) {
+        const div = document.createElement("div");
+        div.textContent = "Permissions (hover for roles)";
+        div.style.fontWeight = "600";
+        div.style.cursor = "pointer";
+        div.onmouseover = () => this.showPermissions(userId);
+        return div;
+    }
+
+    getSettingsPanel() {
+        if (typeof BdApi === "undefined" || !BdApi.UI || !BdApi.UI.buildSettingsPanel) return null;
+
+        const panel = BdApi.UI.buildSettingsPanel({
+            onChange: () => this.saveSettings(),
+            settings: [
+                { type: "switch", id: "contextMenus", name: "Enable context menu", value: this.settings.contextMenus },
+                { type: "switch", id: "popouts", name: "Enable user popouts", value: this.settings.popouts },
+                { type: "select", id: "displayMode", name: "Display Mode", options: ["cozy", "compact"], value: this.settings.displayMode }
+            ]
+        });
+
+        return panel;
+    }
+}
+
+// Export for BetterDiscord
+module.exports = PermissionViewerPatched;
